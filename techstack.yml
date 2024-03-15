@@ -1,0 +1,20 @@
+repo_name: ctavolazzi/awesome-deep-learning
+report_id: d5531c3857bfd78ae55ab830267bc074
+version: 0.1
+repo_type: Public
+timestamp: '2024-03-15T01:57:06+00:00'
+requested_by: ChaiBapchya
+provider: github
+branch: master
+detected_tools_count: 1
+tools:
+- name: Git
+  description: Fast, scalable, distributed revision control system
+  website_url: http://git-scm.com/
+  open_source: true
+  hosted_saas: false
+  category: Build, Test, Deploy
+  sub_category: Version Control System
+  image_url: https://img.stackshare.io/service/1046/git.png
+  detection_source_url: https://github.com/ctavolazzi/awesome-deep-learning
+  detection_source: Repo Metadata
