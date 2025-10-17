@@ -1,0 +1,37 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.dylib
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Build outputs and packaging metadata
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Editor and OS files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Logs and coverage
+*.log
+.coverage
+htmlcov/
+
+# Local environment overrides
+.env
+.env.local
+
+# Node/JS tooling caches
+node_modules/
+
