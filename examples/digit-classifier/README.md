@@ -14,6 +14,8 @@ python examples/digit-classifier/run_demo.py \
   --learning-rate 0.12
 ```
 
+Pass `-h/--help` to see all available flags together with their default values.
+
 Running without any optional flags keeps the workflow fast and produces:
 
 * `metrics.json` – aggregate accuracy numbers plus a classification report.

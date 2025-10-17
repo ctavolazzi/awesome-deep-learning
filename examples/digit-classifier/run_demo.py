@@ -210,7 +210,10 @@ def maybe_save_timing_stats(enabled: bool, output_dir: Path, timings: List[float
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train a digit classifier and optionally export diagnostics.")
+    parser = argparse.ArgumentParser(
+        description="Train a digit classifier and optionally export diagnostics.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
     parser.add_argument("--output-dir", type=Path, default=Path("artifacts"), help="Where to store generated assets.")
     parser.add_argument("--epochs", type=int, default=150, help="Number of training epochs (default: 150).")
     parser.add_argument("--learning-rate", type=float, default=0.1, help="Initial learning rate for gradient descent.")
