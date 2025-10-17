@@ -54,6 +54,11 @@ def _normalise_probabilities(probabilities: Sequence[Any], path: str) -> Sequenc
     return result
 
 
+def _require_number_sequence(value: Any, path: str) -> Sequence[float]:
+    sequence = _require_sequence(value, path)
+    return [_require_number(entry, f"{path}[{idx}]") for idx, entry in enumerate(sequence)]
+
+
 def validate_metrics_payload(payload: Mapping[str, Any]) -> None:
     """Validate the structure of ``metrics.json``."""
 
@@ -150,7 +155,7 @@ def validate_metadata_payload(payload: Mapping[str, Any]) -> None:
         raise SchemaError("run_metadata.dataset", "expected object")
     _require_keys(dataset, {"name", "num_classes", "num_features", "image_shape", "train_size", "val_size", "test_size"}, "run_metadata.dataset")
     _require_int(dataset["num_classes"], "run_metadata.dataset.num_classes")
-    _require_int(dataset["num_features"], "run_metadata.dataset.num_features")
+    num_features = _require_int(dataset["num_features"], "run_metadata.dataset.num_features")
     _require_sequence(dataset["image_shape"], "run_metadata.dataset.image_shape")
     _require_int(dataset["train_size"], "run_metadata.dataset.train_size")
     _require_int(dataset["val_size"], "run_metadata.dataset.val_size")
@@ -168,9 +173,30 @@ def validate_metadata_payload(payload: Mapping[str, Any]) -> None:
     normalization = payload["feature_normalization"]
     if not isinstance(normalization, Mapping):
         raise SchemaError("run_metadata.feature_normalization", "expected object")
-    _require_keys(normalization, {"method", "stats_source"}, "run_metadata.feature_normalization")
+    _require_keys(
+        normalization,
+        {"method", "stats_source", "mean", "std"},
+        "run_metadata.feature_normalization",
+    )
     _require_string(normalization["method"], "run_metadata.feature_normalization.method")
     _require_string(normalization["stats_source"], "run_metadata.feature_normalization.stats_source")
+    means = _require_number_sequence(normalization["mean"], "run_metadata.feature_normalization.mean")
+    stds = _require_number_sequence(normalization["std"], "run_metadata.feature_normalization.std")
+    if len(means) != len(stds):
+        raise SchemaError(
+            "run_metadata.feature_normalization.std",
+            "expected std sequence to match mean sequence length",
+        )
+    if not means:
+        raise SchemaError(
+            "run_metadata.feature_normalization.mean",
+            "expected at least one feature statistic",
+        )
+    if len(means) != num_features:
+        raise SchemaError(
+            "run_metadata.feature_normalization.mean",
+            f"expected {num_features} entries, received {len(means)}",
+        )
 
     artifacts = payload["artifacts"]
     if not isinstance(artifacts, Mapping):

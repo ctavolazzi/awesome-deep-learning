@@ -272,6 +272,8 @@ def build_artifacts(
     test_probs: np.ndarray,
     test_labels: np.ndarray,
     test_indices: np.ndarray,
+    feature_mean: np.ndarray,
+    feature_std: np.ndarray,
 ) -> Dict[str, Mapping[str, object]]:
     """Create JSON-serialisable payloads for the dashboard."""
 
@@ -328,6 +330,8 @@ def build_artifacts(
         "feature_normalization": {
             "method": "zscore",
             "stats_source": "train_split",
+            "mean": [float(value) for value in feature_mean.tolist()],
+            "std": [float(value) for value in feature_std.tolist()],
         },
         "artifacts": {
             "metrics": ARTIFACT_FILES["metrics"],
@@ -477,7 +481,16 @@ def main() -> None:
         test_size=int(y_test.size),
     )
 
-    artifacts = build_artifacts(config, dataset_info, history, test_probs, y_test, idx_test)
+    artifacts = build_artifacts(
+        config,
+        dataset_info,
+        history,
+        test_probs,
+        y_test,
+        idx_test,
+        feature_mean,
+        feature_std,
+    )
 
     write_artifacts(config.output_dir, artifacts)
 

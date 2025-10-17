@@ -74,10 +74,15 @@ class DigitClassifierArtifactsTest(unittest.TestCase):
             self.assertTrue((output_dir / "gallery.png").exists())
             self.assertEqual(metadata["run_name"], "unittest")
             self.assertEqual(metadata["training_config"]["epochs"], 1)
-            self.assertEqual(
-                metadata["feature_normalization"],
-                {"method": "zscore", "stats_source": "train_split"},
-            )
+            normalization = metadata["feature_normalization"]
+            self.assertEqual(normalization["method"], "zscore")
+            self.assertEqual(normalization["stats_source"], "train_split")
+            means = normalization["mean"]
+            stds = normalization["std"]
+            self.assertEqual(len(means), len(stds))
+            self.assertEqual(len(means), metadata["dataset"]["num_features"])
+            self.assertTrue(all(isinstance(value, (int, float)) for value in means))
+            self.assertTrue(all(isinstance(value, (int, float)) for value in stds))
             self.assertEqual(metadata["artifacts"]["metrics"], "metrics.json")
 
 
