@@ -1,0 +1,13 @@
+# Default configuration for the digit classifier demo.
+# Override any field via CLI flags when invoking run_demo.py.
+output_dir: artifacts/digits
+hyperparameters:
+  epochs: 150
+  learning_rate: 0.1
+  lr_decay: 0.01
+  test_split: 0.2
+  seed: 13
+analytics:
+  roc_per_class: false
+  learning_rate_trace: false
+  timing_stats: false

@@ -16,7 +16,7 @@ import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Tuple
 
 import matplotlib
 
@@ -24,6 +24,7 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 import numpy as np
+import yaml
 from sklearn.datasets import load_digits
 from sklearn.metrics import (
     ConfusionMatrixDisplay,
@@ -265,39 +266,111 @@ def maybe_save_timing_stats(enabled: bool, output_dir: Path, timings: List[float
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train a digit classifier and optionally export diagnostics.")
-    parser.add_argument("--output-dir", type=Path, default=Path("artifacts"), help="Where to store generated assets.")
-    parser.add_argument("--epochs", type=int, default=150, help="Number of training epochs (default: 150).")
-    parser.add_argument("--learning-rate", type=float, default=0.1, help="Initial learning rate for gradient descent.")
     parser.add_argument(
-        "--lr-decay", type=float, default=0.01, help="Linear decay factor applied per epoch to the learning rate."
+        "--config",
+        type=Path,
+        default=None,
+        help="Path to a YAML configuration file (default: config.yaml next to this script).",
     )
-    parser.add_argument("--test-split", type=float, default=0.2, help="Fraction of the dataset reserved for evaluation.")
-    parser.add_argument("--seed", type=int, default=13, help="Random seed controlling the train/test split.")
+    parser.add_argument("--output-dir", type=Path, default=None, help="Where to store generated assets.")
+    parser.add_argument("--epochs", type=int, default=None, help="Number of training epochs.")
+    parser.add_argument("--learning-rate", type=float, default=None, help="Initial learning rate for gradient descent.")
+    parser.add_argument("--lr-decay", type=float, default=None, help="Linear decay factor applied per epoch.")
+    parser.add_argument("--test-split", type=float, default=None, help="Fraction of the dataset reserved for evaluation.")
+    parser.add_argument("--seed", type=int, default=None, help="Random seed controlling the train/test split.")
     parser.add_argument(
         "--roc-per-class",
+        dest="roc_per_class",
         action="store_true",
         help="Compute ROC curves and AUC scores for each class (requires probability estimates).",
     )
     parser.add_argument(
+        "--no-roc-per-class",
+        dest="roc_per_class",
+        action="store_false",
+        help="Disable ROC curve generation even if enabled in the config file.",
+    )
+    parser.add_argument(
         "--learning-rate-trace",
+        dest="learning_rate_trace",
         action="store_true",
         help="Persist the learning-rate schedule and loss values as JSON/PNG artifacts.",
     )
     parser.add_argument(
+        "--no-learning-rate-trace",
+        dest="learning_rate_trace",
+        action="store_false",
+        help="Disable learning-rate tracing even if enabled in the config file.",
+    )
+    parser.add_argument(
         "--timing-stats",
+        dest="timing_stats",
         action="store_true",
         help="Record timing statistics for each epoch and export summary visualizations.",
     )
+    parser.add_argument(
+        "--no-timing-stats",
+        dest="timing_stats",
+        action="store_false",
+        help="Disable timing statistics even if enabled in the config file.",
+    )
+    parser.set_defaults(roc_per_class=None, learning_rate_trace=None, timing_stats=None)
     return parser.parse_args()
+
+
+def load_config(path: Path | None) -> tuple[Path, Dict[str, Any]]:
+    if path is None:
+        path = Path(__file__).with_name("config.yaml")
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            payload = yaml.safe_load(fh) or {}
+    except FileNotFoundError as exc:  # pragma: no cover - surfaces as a user-facing error.
+        raise SystemExit(f"Configuration file not found: {path}") from exc
+
+    if not isinstance(payload, dict):
+        raise SystemExit(f"Configuration file must define a mapping at the top level: {path}")
+
+    return path, payload
+
+
+def resolve_settings(args: argparse.Namespace, config: Dict[str, Any], config_path: Path) -> Dict[str, Any]:
+    hyperparameters = config.get("hyperparameters", {}) if isinstance(config.get("hyperparameters", {}), dict) else {}
+    analytics = config.get("analytics", {}) if isinstance(config.get("analytics", {}), dict) else {}
+
+    def pick(cli_value: Any, config_value: Any, fallback: Any) -> Any:
+        return cli_value if cli_value is not None else (config_value if config_value is not None else fallback)
+
+    resolved = {
+        "config_path": config_path,
+        "output_dir": Path(pick(args.output_dir, config.get("output_dir"), Path("artifacts"))),
+        "epochs": int(pick(args.epochs, hyperparameters.get("epochs"), 150)),
+        "learning_rate": float(pick(args.learning_rate, hyperparameters.get("learning_rate"), 0.1)),
+        "lr_decay": float(pick(args.lr_decay, hyperparameters.get("lr_decay"), 0.01)),
+        "test_split": float(pick(args.test_split, hyperparameters.get("test_split"), 0.2)),
+        "seed": int(pick(args.seed, hyperparameters.get("seed"), 13)),
+        "roc_per_class": bool(pick(args.roc_per_class, analytics.get("roc_per_class"), False)),
+        "learning_rate_trace": bool(pick(args.learning_rate_trace, analytics.get("learning_rate_trace"), False)),
+        "timing_stats": bool(pick(args.timing_stats, analytics.get("timing_stats"), False)),
+    }
+    return resolved
 
 
 def main() -> None:
     args = parse_args()
-    output_dir = ensure_output_dir(args.output_dir)
+    config_path, config = load_config(args.config)
+    settings = resolve_settings(args, config, config_path)
 
-    x_train, x_test, y_train, y_test, class_names = load_dataset(args.test_split, args.seed)
+    output_dir = ensure_output_dir(settings["output_dir"])
 
-    training = train_model(x_train, y_train, args.epochs, args.learning_rate, args.lr_decay)
+    x_train, x_test, y_train, y_test, class_names = load_dataset(settings["test_split"], settings["seed"])
+
+    training = train_model(
+        x_train,
+        y_train,
+        settings["epochs"],
+        settings["learning_rate"],
+        settings["lr_decay"],
+    )
 
     train_predictions = training.predict(x_train)
     test_probabilities = training.predict_proba(x_test)
@@ -309,13 +382,21 @@ def main() -> None:
     save_metrics(output_dir, class_names, y_test, test_predictions, train_accuracy, test_accuracy)
     save_confusion_matrix(output_dir, class_names, y_test, test_predictions)
 
-    maybe_save_roc_curves(args.roc_per_class, output_dir, class_names, y_test, test_probabilities)
-    maybe_save_learning_rate_trace(args.learning_rate_trace, output_dir, training.learning_rates, training.losses)
-    maybe_save_timing_stats(args.timing_stats, output_dir, training.epoch_timings, training.total_time)
+    maybe_save_roc_curves(settings["roc_per_class"], output_dir, class_names, y_test, test_probabilities)
+    maybe_save_learning_rate_trace(
+        settings["learning_rate_trace"], output_dir, training.learning_rates, training.losses
+    )
+    maybe_save_timing_stats(settings["timing_stats"], output_dir, training.epoch_timings, training.total_time)
 
     summary = {
         "train_accuracy": train_accuracy,
         "test_accuracy": test_accuracy,
+        "config_path": str(settings["config_path"]),
+        "resolved_settings": {
+            key: (str(value) if isinstance(value, Path) else value)
+            for key, value in settings.items()
+            if key != "config_path"
+        },
         "artifacts": sorted(str(path.name) for path in output_dir.iterdir() if path.is_file()),
     }
     print(json.dumps(summary, indent=2))
