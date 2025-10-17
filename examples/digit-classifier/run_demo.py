@@ -16,13 +16,11 @@ import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple
 
-import matplotlib
+if TYPE_CHECKING:  # pragma: no cover - import only for type checking
+    from matplotlib import pyplot as plt
 
-matplotlib.use("Agg")
-
-import matplotlib.pyplot as plt
 import numpy as np
 import yaml
 from sklearn.datasets import load_digits
@@ -36,6 +34,22 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
+
+
+_PYPLOT: Optional["plt"] = None
+
+
+def get_pyplot():
+    global _PYPLOT
+    if _PYPLOT is None:
+        import matplotlib
+
+        matplotlib.use("Agg")
+
+        from matplotlib import pyplot as _plt
+
+        _PYPLOT = _plt
+    return _PYPLOT
 
 
 @dataclass
@@ -154,6 +168,7 @@ def save_metrics(
 
 def save_confusion_matrix(output_dir: Path, class_names: Iterable[str], y_true: np.ndarray, y_pred: np.ndarray) -> None:
     cm = confusion_matrix(y_true, y_pred)
+    plt = get_pyplot()
     fig, ax = plt.subplots(figsize=(6, 5))
     disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=list(class_names))
     disp.plot(ax=ax, cmap="Blues", colorbar=False)
@@ -176,6 +191,7 @@ def maybe_save_roc_curves(
     class_names = list(class_names)
     roc_data: Dict[str, Dict[str, List[float]]] = {}
 
+    plt = get_pyplot()
     fig, ax = plt.subplots(figsize=(7, 6))
     for class_index, class_name in enumerate(class_names):
         fpr, tpr, _ = roc_curve((y_true == class_index).astype(int), probabilities[:, class_index])
@@ -219,6 +235,7 @@ def maybe_save_learning_rate_trace(
     with (output_dir / "training_dynamics.json").open("w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2)
 
+    plt = get_pyplot()
     fig, ax1 = plt.subplots(figsize=(7, 5))
     ax1.plot(epochs, learning_rates, color="tab:blue", label="Learning rate")
     ax1.set_xlabel("Epoch")
@@ -254,6 +271,7 @@ def maybe_save_timing_stats(enabled: bool, output_dir: Path, timings: List[float
 
     if timings:
         epochs = list(range(1, len(timings) + 1))
+        plt = get_pyplot()
         fig, ax = plt.subplots(figsize=(7, 4))
         ax.bar(epochs, timings, color="tab:green")
         ax.set_xlabel("Epoch")
