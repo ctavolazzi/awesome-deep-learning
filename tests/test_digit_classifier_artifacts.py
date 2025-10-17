@@ -74,6 +74,10 @@ class DigitClassifierArtifactsTest(unittest.TestCase):
             self.assertTrue((output_dir / "gallery.png").exists())
             self.assertEqual(metadata["run_name"], "unittest")
             self.assertEqual(metadata["training_config"]["epochs"], 1)
+            self.assertEqual(
+                metadata["feature_normalization"],
+                {"method": "zscore", "stats_source": "train_split"},
+            )
             self.assertEqual(metadata["artifacts"]["metrics"], "metrics.json")
 
 

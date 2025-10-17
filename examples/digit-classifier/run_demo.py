@@ -325,6 +325,10 @@ def build_artifacts(
             "learning_rate": config.learning_rate,
             "seed": config.seed,
         },
+        "feature_normalization": {
+            "method": "zscore",
+            "stats_source": "train_split",
+        },
         "artifacts": {
             "metrics": ARTIFACT_FILES["metrics"],
             "predictions": ARTIFACT_FILES["predictions"],

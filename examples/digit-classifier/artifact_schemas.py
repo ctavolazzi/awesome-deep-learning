@@ -41,6 +41,12 @@ def _require_sequence(value: Any, path: str) -> Sequence[Any]:
     return value
 
 
+def _require_string(value: Any, path: str) -> str:
+    if not isinstance(value, str):
+        raise SchemaError(path, f"expected string, received {type(value).__name__}")
+    return value
+
+
 def _normalise_probabilities(probabilities: Sequence[Any], path: str) -> Sequence[float]:
     result = []
     for idx, entry in enumerate(probabilities):
@@ -133,7 +139,11 @@ def validate_loss_curves_payload(payload: Mapping[str, Any]) -> None:
 def validate_metadata_payload(payload: Mapping[str, Any]) -> None:
     """Validate the structure of ``run_metadata.json``."""
 
-    _require_keys(payload, {"run_name", "generated_at", "dataset", "training_config", "artifacts"}, "run_metadata")
+    _require_keys(
+        payload,
+        {"run_name", "generated_at", "dataset", "training_config", "feature_normalization", "artifacts"},
+        "run_metadata",
+    )
 
     dataset = payload["dataset"]
     if not isinstance(dataset, Mapping):
@@ -154,6 +164,13 @@ def validate_metadata_payload(payload: Mapping[str, Any]) -> None:
     _require_int(training["batch_size"], "run_metadata.training_config.batch_size")
     _require_number(training["learning_rate"], "run_metadata.training_config.learning_rate")
     _require_int(training["seed"], "run_metadata.training_config.seed")
+
+    normalization = payload["feature_normalization"]
+    if not isinstance(normalization, Mapping):
+        raise SchemaError("run_metadata.feature_normalization", "expected object")
+    _require_keys(normalization, {"method", "stats_source"}, "run_metadata.feature_normalization")
+    _require_string(normalization["method"], "run_metadata.feature_normalization.method")
+    _require_string(normalization["stats_source"], "run_metadata.feature_normalization.stats_source")
 
     artifacts = payload["artifacts"]
     if not isinstance(artifacts, Mapping):

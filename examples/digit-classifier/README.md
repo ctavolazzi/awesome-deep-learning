@@ -50,7 +50,7 @@ The command writes five artifacts into the requested directory:
 | `metrics.json` | Aggregate metrics from the final model (loss/accuracy for each split plus the number of epochs).
 | `predictions.json` | Per-sample predictions on the test split.  Every record includes the index, ground truth label, predicted label, and the full probability vector.
 | `loss_curves.json` | Training and validation loss/accuracy for each epoch so the dashboard can render curves or tables.
-| `run_metadata.json` | Metadata describing the dataset, run configuration, and the list of exported artifacts.
+| `run_metadata.json` | Metadata describing the dataset, run configuration, feature normalisation strategy, and the list of exported artifacts.
 | `gallery.png` | A 5×5 grid of test examples coloured by correctness for a quick qualitative check.
 
 All JSON files are indented and human-readable, making it easy to diff
@@ -67,6 +67,11 @@ that front-end code can rely on stable shapes.
 - `config.example.json` shows how to define a repeatable training run.
   When a config file is supplied the CLI still takes precedence for any
   flags you pass explicitly.
+
+The training script fits normalisation statistics (mean and standard
+deviation) on the training split only and reuses them for validation and
+test data.  This prevents data leakage from the held-out sets and is
+documented in the metadata under `feature_normalization`.
 
 ### JSON schema overview
 
@@ -128,6 +133,10 @@ artifacts (field ordering may differ in the actual files):
     "batch_size": 128,
     "learning_rate": 0.5,
     "seed": 13
+  },
+  "feature_normalization": {
+    "method": "zscore",
+    "stats_source": "train_split"
   },
   "artifacts": {
     "metrics": "metrics.json",
