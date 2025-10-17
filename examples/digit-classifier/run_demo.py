@@ -13,10 +13,8 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import time
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, List
 
 import matplotlib
 
@@ -25,107 +23,46 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.datasets import load_digits
-from sklearn.metrics import (
-    ConfusionMatrixDisplay,
-    accuracy_score,
-    classification_report,
-    confusion_matrix,
-    roc_auc_score,
-    roc_curve,
-)
+from sklearn.metrics import ConfusionMatrixDisplay, classification_report, confusion_matrix, roc_auc_score, roc_curve
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
-
-@dataclass
-class TrainingResult:
-    """Holds parameters and diagnostics from the optimization loop."""
-
-    weights: np.ndarray
-    bias: np.ndarray
-    learning_rates: List[float]
-    losses: List[float]
-    epoch_timings: List[float]
-    total_time: float
-
-    def predict_proba(self, features: np.ndarray) -> np.ndarray:
-        logits = features @ self.weights + self.bias
-        logits -= logits.max(axis=1, keepdims=True)
-        exp_logits = np.exp(logits)
-        return exp_logits / exp_logits.sum(axis=1, keepdims=True)
-
-    def predict(self, features: np.ndarray) -> np.ndarray:
-        return self.predict_proba(features).argmax(axis=1)
+from pipeline import (
+    DatasetLoader,
+    PipelineConfig,
+    SoftmaxGDBuilder,
+    TrainingConfig,
+    run_training_pipeline,
+    DatasetSplit,
+)
 
 
-def load_dataset(test_size: float, random_state: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    digits = load_digits()
-    features = digits.data.astype(np.float32)
-    labels = digits.target.astype(np.int64)
+class DigitsDatasetLoader(DatasetLoader):
+    """Loads and normalizes the scikit-learn digits dataset."""
 
-    scaler = StandardScaler()
-    features = scaler.fit_transform(features)
+    def load(self, *, test_size: float, random_state: int) -> DatasetSplit:
+        digits = load_digits()
+        features = digits.data.astype(np.float32)
+        labels = digits.target.astype(np.int64)
 
-    x_train, x_test, y_train, y_test = train_test_split(
-        features,
-        labels,
-        test_size=test_size,
-        random_state=random_state,
-        stratify=labels,
-    )
-    return x_train, x_test, y_train, y_test, digits.target_names
+        scaler = StandardScaler()
+        features = scaler.fit_transform(features)
 
+        x_train, x_test, y_train, y_test = train_test_split(
+            features,
+            labels,
+            test_size=test_size,
+            random_state=random_state,
+            stratify=labels,
+        )
 
-def softmax_cross_entropy(logits: np.ndarray, labels: np.ndarray) -> float:
-    logits = logits - logits.max(axis=1, keepdims=True)
-    log_probs = logits - np.log(np.exp(logits).sum(axis=1, keepdims=True))
-    n = logits.shape[0]
-    picked = log_probs[np.arange(n), labels]
-    return float(-picked.mean())
-
-
-def train_model(
-    features: np.ndarray,
-    labels: np.ndarray,
-    epochs: int,
-    base_lr: float,
-    lr_decay: float,
-) -> TrainingResult:
-    n_samples, n_features = features.shape
-    num_classes = int(labels.max() + 1)
-
-    weights = np.zeros((n_features, num_classes), dtype=np.float64)
-    bias = np.zeros(num_classes, dtype=np.float64)
-    eye = np.eye(num_classes, dtype=np.float64)
-
-    learning_rates: List[float] = []
-    losses: List[float] = []
-    epoch_timings: List[float] = []
-
-    start = time.perf_counter()
-    for epoch in range(epochs):
-        epoch_start = time.perf_counter()
-
-        logits = features @ weights + bias
-        probs = np.exp(logits - logits.max(axis=1, keepdims=True))
-        probs /= probs.sum(axis=1, keepdims=True)
-
-        targets = eye[labels]
-        grad = (probs - targets) / float(n_samples)
-        grad_w = features.T @ grad
-        grad_b = grad.sum(axis=0)
-
-        current_lr = base_lr / (1.0 + lr_decay * epoch)
-        weights -= current_lr * grad_w
-        bias -= current_lr * grad_b
-
-        loss = softmax_cross_entropy(logits, labels)
-        learning_rates.append(float(current_lr))
-        losses.append(float(loss))
-        epoch_timings.append(time.perf_counter() - epoch_start)
-
-    total_time = time.perf_counter() - start
-    return TrainingResult(weights, bias, learning_rates, losses, epoch_timings, total_time)
+        return DatasetSplit(
+            x_train=x_train,
+            x_test=x_test,
+            y_train=y_train,
+            y_test=y_test,
+            class_names=digits.target_names,
+        )
 
 
 def ensure_output_dir(path: Path) -> Path:
@@ -295,27 +232,53 @@ def main() -> None:
     args = parse_args()
     output_dir = ensure_output_dir(args.output_dir)
 
-    x_train, x_test, y_train, y_test, class_names = load_dataset(args.test_split, args.seed)
+    dataset_loader = DigitsDatasetLoader()
+    model_builder = SoftmaxGDBuilder()
+    config = PipelineConfig(
+        test_size=args.test_split,
+        random_state=args.seed,
+        training=TrainingConfig(
+            epochs=args.epochs,
+            base_learning_rate=args.learning_rate,
+            learning_rate_decay=args.lr_decay,
+        ),
+    )
 
-    training = train_model(x_train, y_train, args.epochs, args.learning_rate, args.lr_decay)
+    result = run_training_pipeline(dataset_loader, model_builder, config)
 
-    train_predictions = training.predict(x_train)
-    test_probabilities = training.predict_proba(x_test)
-    test_predictions = test_probabilities.argmax(axis=1)
+    save_metrics(
+        output_dir,
+        result.dataset.class_names,
+        result.dataset.y_test,
+        result.test_predictions,
+        result.train_accuracy,
+        result.test_accuracy,
+    )
+    save_confusion_matrix(output_dir, result.dataset.class_names, result.dataset.y_test, result.test_predictions)
 
-    train_accuracy = accuracy_score(y_train, train_predictions)
-    test_accuracy = accuracy_score(y_test, test_predictions)
-
-    save_metrics(output_dir, class_names, y_test, test_predictions, train_accuracy, test_accuracy)
-    save_confusion_matrix(output_dir, class_names, y_test, test_predictions)
-
-    maybe_save_roc_curves(args.roc_per_class, output_dir, class_names, y_test, test_probabilities)
-    maybe_save_learning_rate_trace(args.learning_rate_trace, output_dir, training.learning_rates, training.losses)
-    maybe_save_timing_stats(args.timing_stats, output_dir, training.epoch_timings, training.total_time)
+    maybe_save_roc_curves(
+        args.roc_per_class,
+        output_dir,
+        result.dataset.class_names,
+        result.dataset.y_test,
+        result.test_probabilities,
+    )
+    maybe_save_learning_rate_trace(
+        args.learning_rate_trace,
+        output_dir,
+        list(result.training.learning_rates),
+        list(result.training.losses),
+    )
+    maybe_save_timing_stats(
+        args.timing_stats,
+        output_dir,
+        list(result.training.epoch_timings),
+        float(result.training.total_time),
+    )
 
     summary = {
-        "train_accuracy": train_accuracy,
-        "test_accuracy": test_accuracy,
+        "train_accuracy": result.train_accuracy,
+        "test_accuracy": result.test_accuracy,
         "artifacts": sorted(str(path.name) for path in output_dir.iterdir() if path.is_file()),
     }
     print(json.dumps(summary, indent=2))

@@ -22,6 +22,33 @@ Running without any optional flags keeps the workflow fast and produces:
 The script prints a JSON-formatted summary to stdout containing the final train
 and test accuracy together with the list of generated artifact filenames.
 
+## Extensibility
+
+The training and evaluation workflow is implemented in
+[`pipeline.py`](./pipeline.py).  The module defines small interfaces that make
+it easy to swap individual pieces of the experiment:
+
+* **Dataset loaders** implement the `DatasetLoader` protocol and only need to
+  expose a `load(test_size=..., random_state=...)` method that returns a
+  `DatasetSplit` object.  The included `DigitsDatasetLoader` demonstrates how to
+  normalize inputs and preserve class names.
+* **Model builders** implement the `ModelBuilder` protocol and are responsible
+  for constructing a `TrainableModel` tailored to the feature and class
+  dimensions of the dataset.  `SoftmaxGDBuilder` instantiates the provided
+  gradient-descent-based softmax classifier, but custom architectures can be
+  injected without modifying the CLI.
+* **Training reports** produced by `TrainableModel.fit` must include a
+  `ProbabilisticClassifier` capable of `predict` and `predict_proba`.  The
+  pipeline relies on these methods to drive all analytics (metrics, ROC curves,
+  and exported figures), so alternative models should expose the same
+  prediction surface.
+
+`run_demo.py` wires these components together via `run_training_pipeline`, which
+handles fitting the model, generating predictions, and computing headline
+metrics.  Additional analytics hooks consume the resulting `PipelineResult`, so
+alternative implementations only need to honor the pipeline interfaces to reuse
+the reporting stack.
+
 ## Expanded analytics
 
 Heavier diagnostics can be toggled on individually via CLI flags so that the
