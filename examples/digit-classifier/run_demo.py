@@ -1,509 +1,467 @@
-"""Train a lightweight digit classifier and export demo artifacts.
+#!/usr/bin/env python3
+"""Digit classification demo with optional analytics exports.
 
-This script trains a very small softmax regression model on the
-``sklearn`` digits dataset (8x8 grayscale images).  It writes several
-artifacts that are consumed by the accompanying static dashboard:
-
-* ``metrics.json`` – aggregate metrics from the final model.
-* ``predictions.json`` – per-sample predictions on the test split.
-* ``loss_curves.json`` – training/validation losses and accuracies per epoch.
-* ``run_metadata.json`` – information about the run configuration.
-* ``gallery.png`` – a grid of example predictions for quick inspection.
-
-The goal is to keep the dependencies minimal (numpy, pillow, sklearn) so
-that the demo can be reproduced without a heavy deep-learning stack.
+This script trains a small multinomial logistic regression model using a
+hand-written gradient descent loop.  By default it reports core accuracy
+metrics and saves a confusion matrix.  Additional analytics such as
+per-class ROC curves, learning-rate traces, and timing information can be
+computed on demand via CLI flags.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import random
-from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+import math
+import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, Tuple
+from typing import Dict, Iterable, List, Sequence, Tuple
 
+import matplotlib
+
+matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt
 import numpy as np
-from PIL import Image
 from sklearn.datasets import load_digits
+from sklearn.metrics import (
+    ConfusionMatrixDisplay,
+    accuracy_score,
+    classification_report,
+    confusion_matrix,
+    roc_auc_score,
+    roc_curve,
+)
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
 
-if __package__:
-    from .artifact_schemas import (
-        validate_loss_curves_payload,
-        validate_metadata_payload,
-        validate_metrics_payload,
-        validate_predictions_payload,
-    )
-else:  # pragma: no cover - compatibility when executing as a script
-    from artifact_schemas import (
-        validate_loss_curves_payload,
-        validate_metadata_payload,
-        validate_metrics_payload,
-        validate_predictions_payload,
-    )
+Number = (int, float)
 
 
-DEFAULT_ARGUMENTS = {
-    "epochs": 40,
-    "batch_size": 128,
-    "learning_rate": 0.5,
-    "seed": 13,
-    "output_dir": "artifacts/latest",
-}
+def _ensure_number(name: str, value: object) -> float:
+    if not isinstance(value, Number) or isinstance(value, bool) or not math.isfinite(float(value)):
+        raise ValueError(f"{name} must be a finite numeric value, received {value!r}")
+    return float(value)
 
-ARTIFACT_FILES = {
-    "metrics": "metrics.json",
-    "predictions": "predictions.json",
-    "loss_curves": "loss_curves.json",
-    "metadata": "run_metadata.json",
-}
+
+def _ensure_probability(name: str, value: object) -> float:
+    number = _ensure_number(name, value)
+    if not 0.0 <= number <= 1.0:
+        raise ValueError(f"{name} must be within [0, 1], received {value!r}")
+    return number
+
+
+def _ensure_number_list(name: str, values: object, *, allow_empty: bool = False) -> List[float]:
+    if not isinstance(values, Iterable) or isinstance(values, (str, bytes)):
+        raise ValueError(f"{name} must be an iterable of numeric values")
+    result = []
+    for index, value in enumerate(values):
+        result.append(_ensure_number(f"{name}[{index}]", value))
+    if not allow_empty and not result:
+        raise ValueError(f"{name} must not be empty")
+    return result
+
+
+def validate_metrics_payload(payload: Dict[str, object]) -> None:
+    if not isinstance(payload, dict):
+        raise ValueError("metrics payload must be a dictionary")
+
+    for key in ("train_accuracy", "test_accuracy", "classification_report"):
+        if key not in payload:
+            raise ValueError(f"metrics payload missing required key '{key}'")
+
+    for key in ("train_accuracy", "test_accuracy"):
+        _ensure_probability(key, payload[key])
+
+    report = payload["classification_report"]
+    if not isinstance(report, dict):
+        raise ValueError("classification_report must be a dictionary")
+
+    required_fields = {"precision", "recall", "f1-score", "support"}
+    for label, stats in report.items():
+        if isinstance(stats, dict):
+            missing = required_fields - stats.keys()
+            if missing:
+                raise ValueError(f"classification_report entry '{label}' missing fields {sorted(missing)}")
+            for field in ("precision", "recall", "f1-score"):
+                _ensure_probability(f"classification_report['{label}']['{field}']", stats[field])
+            support_value = stats["support"]
+            support = _ensure_number(f"classification_report['{label}']['support']", support_value)
+            if support < 0:
+                raise ValueError("classification_report support values must be non-negative")
+        else:
+            if label != "accuracy":
+                raise ValueError(f"classification_report entry '{label}' must be a mapping")
+            _ensure_probability("classification_report['accuracy']", stats)
+
+
+def validate_roc_payload(payload: Dict[str, object], expected_classes: Sequence[str]) -> None:
+    if not isinstance(payload, dict):
+        raise ValueError("roc payload must be a dictionary")
+    expected = set(expected_classes)
+    actual = set(payload.keys())
+    if expected != actual:
+        raise ValueError(f"roc payload keys {sorted(actual)} do not match expected classes {sorted(expected)}")
+
+    for class_name, stats in payload.items():
+        if not isinstance(stats, dict):
+            raise ValueError(f"roc entry '{class_name}' must be a dictionary")
+        for key in ("fpr", "tpr", "auc"):
+            if key not in stats:
+                raise ValueError(f"roc entry '{class_name}' missing key '{key}'")
+
+        fpr = _ensure_number_list(f"roc['{class_name}']['fpr']", stats["fpr"])
+        tpr = _ensure_number_list(f"roc['{class_name}']['tpr']", stats["tpr"])
+        if len(fpr) != len(tpr):
+            raise ValueError(f"roc entry '{class_name}' must have equally sized fpr and tpr arrays")
+        for index, value in enumerate(fpr):
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(f"roc['{class_name}']['fpr'][{index}] must be within [0, 1]")
+        for index, value in enumerate(tpr):
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(f"roc['{class_name}']['tpr'][{index}] must be within [0, 1]")
+        _ensure_probability(f"roc['{class_name}']['auc']", stats["auc"])
+
+
+def validate_training_dynamics_payload(payload: Dict[str, object]) -> None:
+    if not isinstance(payload, dict):
+        raise ValueError("training dynamics payload must be a dictionary")
+
+    for key in ("epochs", "learning_rates", "losses"):
+        if key not in payload:
+            raise ValueError(f"training dynamics payload missing key '{key}'")
+
+    epochs = payload["epochs"]
+    learning_rates = payload["learning_rates"]
+    losses = payload["losses"]
+
+    if not isinstance(epochs, Iterable) or isinstance(epochs, (str, bytes)):
+        raise ValueError("epochs must be an iterable of integers")
+    epochs_list = []
+    for index, value in enumerate(epochs):
+        if not isinstance(value, int):
+            raise ValueError(f"epochs[{index}] must be an integer")
+        epochs_list.append(value)
+    if not epochs_list:
+        raise ValueError("epochs must not be empty")
+
+    learning_rates_list = _ensure_number_list("learning_rates", learning_rates)
+    losses_list = _ensure_number_list("losses", losses)
+
+    if not (len(epochs_list) == len(learning_rates_list) == len(losses_list)):
+        raise ValueError("epochs, learning_rates, and losses must be the same length")
+
+    for index, epoch in enumerate(epochs_list):
+        if epoch != index + 1:
+            raise ValueError("epochs must start at 1 and increase by 1 for each entry")
+
+
+def validate_timing_stats_payload(payload: Dict[str, object], expected_epochs: int) -> None:
+    if not isinstance(payload, dict):
+        raise ValueError("timing stats payload must be a dictionary")
+    for key in ("total_training_time_sec", "average_epoch_time_sec", "epoch_durations_sec"):
+        if key not in payload:
+            raise ValueError(f"timing stats payload missing key '{key}'")
+
+    total = _ensure_number("total_training_time_sec", payload["total_training_time_sec"])
+    average = _ensure_number("average_epoch_time_sec", payload["average_epoch_time_sec"])
+    if total < 0 or average < 0:
+        raise ValueError("timing stats durations must be non-negative")
+
+    durations = _ensure_number_list("epoch_durations_sec", payload["epoch_durations_sec"], allow_empty=True)
+    if durations and len(durations) != expected_epochs:
+        raise ValueError("epoch_durations_sec length must match number of epochs")
+    if durations and any(value < 0 for value in durations):
+        raise ValueError("epoch durations must be non-negative")
 
 
 @dataclass
-class TrainingConfig:
-    """Configuration parameters for the training run."""
+class TrainingResult:
+    """Holds parameters and diagnostics from the optimization loop."""
 
-    seed: int
-    epochs: int
-    batch_size: int
-    learning_rate: float
-    output_dir: Path
-    run_name: str
+    weights: np.ndarray
+    bias: np.ndarray
+    learning_rates: List[float]
+    losses: List[float]
+    epoch_timings: List[float]
+    total_time: float
 
+    def predict_proba(self, features: np.ndarray) -> np.ndarray:
+        logits = features @ self.weights + self.bias
+        logits -= logits.max(axis=1, keepdims=True)
+        exp_logits = np.exp(logits)
+        return exp_logits / exp_logits.sum(axis=1, keepdims=True)
 
-@dataclass
-class DatasetInfo:
-    name: str
-    num_classes: int
-    num_features: int
-    image_shape: Tuple[int, int]
-    train_size: int
-    val_size: int
-    test_size: int
+    def predict(self, features: np.ndarray) -> np.ndarray:
+        return self.predict_proba(features).argmax(axis=1)
 
 
-@dataclass
-class TrainingMetrics:
-    train_loss: float
-    train_accuracy: float
-    val_loss: float
-    val_accuracy: float
+def load_dataset(test_size: float, random_state: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    digits = load_digits()
+    features = digits.data.astype(np.float32)
+    labels = digits.target.astype(np.int64)
 
+    scaler = StandardScaler()
+    features = scaler.fit_transform(features)
 
-def load_config_overrides(path: Path) -> Dict[str, object]:
-    """Load configuration overrides from a JSON file."""
-
-    with path.open("r", encoding="utf-8") as fh:
-        data = json.load(fh)
-
-    if not isinstance(data, Mapping):
-        raise ValueError("Configuration file must contain a JSON object.")
-
-    allowed_keys = set(DEFAULT_ARGUMENTS) | {"run_name"}
-    overrides: Dict[str, object] = {}
-    for key in allowed_keys:
-        if key in data:
-            overrides[key] = data[key]
-    return overrides
-
-
-def build_training_config(args: argparse.Namespace) -> TrainingConfig:
-    """Combine CLI arguments with config-file overrides."""
-
-    resolved: Dict[str, object] = dict(DEFAULT_ARGUMENTS)
-    if args.config:
-        resolved.update(load_config_overrides(Path(args.config)))
-
-    for key in ("epochs", "batch_size", "learning_rate", "seed", "run_name"):
-        value = getattr(args, key, None)
-        if value is not None:
-            resolved[key] = value
-
-    output_dir = getattr(args, "output_dir", None)
-    if output_dir is not None:
-        resolved["output_dir"] = output_dir
-
-    output_dir_path = Path(str(resolved["output_dir"]))
-    run_name = resolved.get("run_name")
-    seed = int(resolved.get("seed", DEFAULT_ARGUMENTS["seed"]))
-
-    return TrainingConfig(
-        seed=seed,
-        epochs=int(resolved.get("epochs", DEFAULT_ARGUMENTS["epochs"])),
-        batch_size=int(resolved.get("batch_size", DEFAULT_ARGUMENTS["batch_size"])),
-        learning_rate=float(resolved.get("learning_rate", DEFAULT_ARGUMENTS["learning_rate"])),
-        output_dir=output_dir_path,
-        run_name=str(run_name) if run_name else build_run_name(seed),
+    x_train, x_test, y_train, y_test = train_test_split(
+        features,
+        labels,
+        test_size=test_size,
+        random_state=random_state,
+        stratify=labels,
     )
+    return x_train, x_test, y_train, y_test, digits.target_names
 
 
-def softmax(logits: np.ndarray) -> np.ndarray:
-    """Apply the softmax function in a numerically stable way."""
-
-    shifted = logits - logits.max(axis=1, keepdims=True)
-    exp_values = np.exp(shifted)
-    sums = exp_values.sum(axis=1, keepdims=True)
-    return exp_values / sums
-
-
-def cross_entropy(probabilities: np.ndarray, labels: np.ndarray) -> float:
-    """Average cross entropy between predicted probabilities and labels."""
-
-    eps = 1e-12
-    picked = probabilities[np.arange(labels.size), labels]
-    return float(-np.log(picked + eps).mean())
-
-
-def accuracy(probabilities: np.ndarray, labels: np.ndarray) -> float:
-    preds = probabilities.argmax(axis=1)
-    return float((preds == labels).mean())
-
-
-def iterate_minibatches(
-    rng: np.random.Generator,
-    features: np.ndarray,
-    labels: np.ndarray,
-    batch_size: int,
-) -> Iterable[Tuple[np.ndarray, np.ndarray]]:
-    indices = rng.permutation(features.shape[0])
-    for start in range(0, indices.size, batch_size):
-        end = start + batch_size
-        batch_indices = indices[start:end]
-        yield features[batch_indices], labels[batch_indices]
+def softmax_cross_entropy(logits: np.ndarray, labels: np.ndarray) -> float:
+    logits = logits - logits.max(axis=1, keepdims=True)
+    log_probs = logits - np.log(np.exp(logits).sum(axis=1, keepdims=True))
+    n = logits.shape[0]
+    picked = log_probs[np.arange(n), labels]
+    return float(-picked.mean())
 
 
 def train_model(
-    config: TrainingConfig,
-    x_train: np.ndarray,
-    y_train: np.ndarray,
-    x_val: np.ndarray,
-    y_val: np.ndarray,
-) -> Tuple[np.ndarray, np.ndarray, List[TrainingMetrics]]:
-    """Train a softmax regression model using mini-batch gradient descent."""
-
-    rng = np.random.default_rng(config.seed)
-    num_features = x_train.shape[1]
-    num_classes = y_train.max() + 1
-
-    weights = rng.normal(scale=0.01, size=(num_features, num_classes))
-    biases = np.zeros(num_classes, dtype=np.float64)
-
-    history: List[TrainingMetrics] = []
-
-    for epoch in range(config.epochs):
-        for batch_x, batch_y in iterate_minibatches(rng, x_train, y_train, config.batch_size):
-            logits = batch_x @ weights + biases
-            probabilities = softmax(logits)
-
-            grad_logits = probabilities
-            grad_logits[np.arange(batch_y.size), batch_y] -= 1.0
-            grad_logits /= batch_y.size
-
-            grad_weights = batch_x.T @ grad_logits
-            grad_biases = grad_logits.sum(axis=0)
-
-            weights -= config.learning_rate * grad_weights
-            biases -= config.learning_rate * grad_biases
-
-        train_probs = softmax(x_train @ weights + biases)
-        val_probs = softmax(x_val @ weights + biases)
-
-        metrics = TrainingMetrics(
-            train_loss=cross_entropy(train_probs, y_train),
-            train_accuracy=accuracy(train_probs, y_train),
-            val_loss=cross_entropy(val_probs, y_val),
-            val_accuracy=accuracy(val_probs, y_val),
-        )
-        history.append(metrics)
-
-    return weights, biases, history
-
-
-def render_gallery(
-    output_path: Path,
-    digits_images: np.ndarray,
-    test_indices: np.ndarray,
-    predictions: np.ndarray,
-    labels: np.ndarray,
-) -> None:
-    """Create a gallery grid that shows sample predictions."""
-
-    grid_rows = 5
-    grid_cols = 5
-    cell_size = 48
-    spacing = 8
-    palette = {
-        "correct": (50, 168, 82),
-        "incorrect": (207, 76, 65),
-    }
-
-    canvas_width = grid_cols * cell_size + (grid_cols + 1) * spacing
-    canvas_height = grid_rows * cell_size + (grid_rows + 1) * spacing
-    canvas = Image.new("RGB", (canvas_width, canvas_height), color=(30, 30, 30))
-
-    for slot, sample_idx in enumerate(test_indices[: grid_rows * grid_cols]):
-        row = slot // grid_cols
-        col = slot % grid_cols
-        x_offset = spacing + col * (cell_size + spacing)
-        y_offset = spacing + row * (cell_size + spacing)
-
-        raw_image = digits_images[sample_idx]
-        max_value = float(raw_image.max()) or 1.0
-        image = Image.fromarray((raw_image / max_value * 255).astype(np.uint8), mode="L")
-        tile = image.resize((cell_size, cell_size), resample=Image.NEAREST).convert("RGB")
-
-        correct = int(predictions[slot]) == int(labels[slot])
-        border_color = palette["correct" if correct else "incorrect"]
-
-        bordered = Image.new("RGB", (cell_size + 8, cell_size + 8), color=border_color)
-        bordered.paste(tile, (4, 4))
-        canvas.paste(bordered, (x_offset - 4, y_offset - 4))
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    canvas.save(output_path)
-
-
-def build_artifacts(
-    config: TrainingConfig,
-    dataset: DatasetInfo,
-    history: List[TrainingMetrics],
-    test_probs: np.ndarray,
-    test_labels: np.ndarray,
-    test_indices: np.ndarray,
-    feature_mean: np.ndarray,
-    feature_std: np.ndarray,
-) -> Dict[str, Mapping[str, object]]:
-    """Create JSON-serialisable payloads for the dashboard."""
-
-    if not history:
-        raise ValueError("Training history is empty; increase --epochs above zero.")
-
-    metrics = {
-        "train_accuracy": float(history[-1].train_accuracy),
-        "val_accuracy": float(history[-1].val_accuracy),
-        "test_accuracy": float(accuracy(test_probs, test_labels)),
-        "train_loss": float(history[-1].train_loss),
-        "val_loss": float(history[-1].val_loss),
-        "test_loss": float(cross_entropy(test_probs, test_labels)),
-        "num_epochs": int(config.epochs),
-    }
-
-    predictions_payload = {
-        "dataset": dataset.name,
-        "split": "test",
-        "num_classes": dataset.num_classes,
-        "samples": [],
-    }
-
-    for index, (probs, label, dataset_idx) in enumerate(
-        zip(test_probs, test_labels, test_indices)
-    ):
-        sample = {
-            "index": int(index),
-            "dataset_index": int(dataset_idx),
-            "true_label": int(label),
-            "predicted_label": int(np.argmax(probs)),
-            "probabilities": [float(p) for p in probs.tolist()],
-        }
-        predictions_payload["samples"].append(sample)
-
-    loss_curves_payload = {
-        "epochs": [int(idx + 1) for idx in range(len(history))],
-        "train_loss": [float(entry.train_loss) for entry in history],
-        "train_accuracy": [float(entry.train_accuracy) for entry in history],
-        "val_loss": [float(entry.val_loss) for entry in history],
-        "val_accuracy": [float(entry.val_accuracy) for entry in history],
-    }
-
-    metadata_payload = {
-        "run_name": config.run_name,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "dataset": asdict(dataset),
-        "training_config": {
-            "epochs": config.epochs,
-            "batch_size": config.batch_size,
-            "learning_rate": config.learning_rate,
-            "seed": config.seed,
-        },
-        "feature_normalization": {
-            "method": "zscore",
-            "stats_source": "train_split",
-            "mean": [float(value) for value in feature_mean.tolist()],
-            "std": [float(value) for value in feature_std.tolist()],
-        },
-        "artifacts": {
-            "metrics": ARTIFACT_FILES["metrics"],
-            "predictions": ARTIFACT_FILES["predictions"],
-            "loss_curves": ARTIFACT_FILES["loss_curves"],
-            "gallery": "gallery.png",
-        },
-    }
-
-    return {
-        "metrics": metrics,
-        "predictions": predictions_payload,
-        "loss_curves": loss_curves_payload,
-        "metadata": metadata_payload,
-    }
-
-
-def write_artifacts(output_dir: Path, artifacts: Mapping[str, Mapping[str, object]]) -> None:
-    """Validate and serialize the JSON artifacts."""
-
-    validators = {
-        "metrics": validate_metrics_payload,
-        "predictions": validate_predictions_payload,
-        "loss_curves": validate_loss_curves_payload,
-        "metadata": validate_metadata_payload,
-    }
-
-    for key, payload in artifacts.items():
-        validator = validators.get(key)
-        if validator is None:
-            raise KeyError(f"Unknown artifact '{key}'")
-        validator(payload)
-        filename = ARTIFACT_FILES[key]
-        with (output_dir / filename).open("w", encoding="utf-8") as fp:
-            json.dump(payload, fp, indent=2)
-
-
-def prepare_features(
     features: np.ndarray,
-    *,
-    mean: np.ndarray | None = None,
-    std: np.ndarray | None = None,
-    return_stats: bool = False,
-) -> np.ndarray | Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Normalise features using train-set statistics."""
+    labels: np.ndarray,
+    epochs: int,
+    base_lr: float,
+    lr_decay: float,
+) -> TrainingResult:
+    n_samples, n_features = features.shape
+    num_classes = int(labels.max() + 1)
 
-    computed_mean = mean if mean is not None else features.mean(axis=0)
-    if std is None:
-        computed_std = features.std(axis=0)
-        adjusted_std = computed_std + 1e-6
-    else:
-        adjusted_std = std
-    normalised = (features - computed_mean) / adjusted_std
+    weights = np.zeros((n_features, num_classes), dtype=np.float64)
+    bias = np.zeros(num_classes, dtype=np.float64)
+    eye = np.eye(num_classes, dtype=np.float64)
 
-    if return_stats:
-        return normalised, computed_mean, adjusted_std
-    return normalised
+    learning_rates: List[float] = []
+    losses: List[float] = []
+    epoch_timings: List[float] = []
+
+    start = time.perf_counter()
+    for epoch in range(epochs):
+        epoch_start = time.perf_counter()
+
+        logits = features @ weights + bias
+        probs = np.exp(logits - logits.max(axis=1, keepdims=True))
+        probs /= probs.sum(axis=1, keepdims=True)
+
+        targets = eye[labels]
+        grad = (probs - targets) / float(n_samples)
+        grad_w = features.T @ grad
+        grad_b = grad.sum(axis=0)
+
+        current_lr = base_lr / (1.0 + lr_decay * epoch)
+        weights -= current_lr * grad_w
+        bias -= current_lr * grad_b
+
+        loss = softmax_cross_entropy(logits, labels)
+        learning_rates.append(float(current_lr))
+        losses.append(float(loss))
+        epoch_timings.append(time.perf_counter() - epoch_start)
+
+    total_time = time.perf_counter() - start
+    return TrainingResult(weights, bias, learning_rates, losses, epoch_timings, total_time)
 
 
-def build_run_name(seed: int) -> str:
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    return f"digits-softmax-{timestamp}-seed{seed}"
+def ensure_output_dir(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def save_metrics(
+    output_dir: Path,
+    class_names: Iterable[str],
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    train_accuracy: float,
+    test_accuracy: float,
+) -> None:
+    report = classification_report(y_true, y_pred, target_names=list(class_names), output_dict=True)
+    payload: Dict[str, object] = {
+        "train_accuracy": train_accuracy,
+        "test_accuracy": test_accuracy,
+        "classification_report": report,
+    }
+    validate_metrics_payload(payload)
+    with (output_dir / "metrics.json").open("w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2)
+
+
+def save_confusion_matrix(output_dir: Path, class_names: Iterable[str], y_true: np.ndarray, y_pred: np.ndarray) -> None:
+    cm = confusion_matrix(y_true, y_pred)
+    fig, ax = plt.subplots(figsize=(6, 5))
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=list(class_names))
+    disp.plot(ax=ax, cmap="Blues", colorbar=False)
+    ax.set_title("Digit Classifier Confusion Matrix")
+    plt.tight_layout()
+    fig.savefig(output_dir / "confusion_matrix.png", dpi=200)
+    plt.close(fig)
+
+
+def maybe_save_roc_curves(
+    enabled: bool,
+    output_dir: Path,
+    class_names: Iterable[str],
+    y_true: np.ndarray,
+    probabilities: np.ndarray,
+) -> None:
+    if not enabled:
+        return
+
+    class_names = list(class_names)
+    roc_data: Dict[str, Dict[str, List[float]]] = {}
+
+    fig, ax = plt.subplots(figsize=(7, 6))
+    for class_index, class_name in enumerate(class_names):
+        fpr, tpr, _ = roc_curve((y_true == class_index).astype(int), probabilities[:, class_index])
+        auc_score = roc_auc_score((y_true == class_index).astype(int), probabilities[:, class_index])
+        roc_data[class_name] = {
+            "fpr": fpr.tolist(),
+            "tpr": tpr.tolist(),
+            "auc": float(auc_score),
+        }
+        ax.plot(fpr, tpr, label=f"{class_name} (AUC={auc_score:.3f})")
+
+    ax.plot([0, 1], [0, 1], linestyle="--", color="gray", linewidth=1, label="Chance")
+    ax.set_title("Per-Class ROC Curves")
+    ax.set_xlabel("False Positive Rate")
+    ax.set_ylabel("True Positive Rate")
+    ax.legend(loc="lower right", fontsize="small")
+    ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.7)
+    plt.tight_layout()
+    fig.savefig(output_dir / "roc_curves.png", dpi=200)
+    plt.close(fig)
+
+    validate_roc_payload(roc_data, class_names)
+    with (output_dir / "roc_curves.json").open("w", encoding="utf-8") as fh:
+        json.dump(roc_data, fh, indent=2)
+
+
+def maybe_save_learning_rate_trace(
+    enabled: bool,
+    output_dir: Path,
+    learning_rates: List[float],
+    losses: List[float],
+) -> None:
+    if not enabled:
+        return
+
+    epochs = list(range(1, len(learning_rates) + 1))
+    payload = {
+        "epochs": epochs,
+        "learning_rates": learning_rates,
+        "losses": losses,
+    }
+    validate_training_dynamics_payload(payload)
+    with (output_dir / "training_dynamics.json").open("w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2)
+
+    fig, ax1 = plt.subplots(figsize=(7, 5))
+    ax1.plot(epochs, learning_rates, color="tab:blue", label="Learning rate")
+    ax1.set_xlabel("Epoch")
+    ax1.set_ylabel("Learning rate", color="tab:blue")
+    ax1.tick_params(axis="y", labelcolor="tab:blue")
+
+    ax2 = ax1.twinx()
+    ax2.plot(epochs, losses, color="tab:orange", label="Loss")
+    ax2.set_ylabel("Cross-entropy loss", color="tab:orange")
+    ax2.tick_params(axis="y", labelcolor="tab:orange")
+
+    lines, labels = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines + lines2, labels + labels2, loc="upper right")
+    ax1.set_title("Learning Rate and Loss Evolution")
+    fig.tight_layout()
+    fig.savefig(output_dir / "learning_rate_trace.png", dpi=200)
+    plt.close(fig)
+
+
+def maybe_save_timing_stats(enabled: bool, output_dir: Path, timings: List[float], total_time: float) -> None:
+    if not enabled:
+        return
+
+    avg_time = float(sum(timings) / len(timings)) if timings else math.nan
+    payload = {
+        "total_training_time_sec": total_time,
+        "average_epoch_time_sec": avg_time,
+        "epoch_durations_sec": timings,
+    }
+    validate_timing_stats_payload(payload, expected_epochs=len(timings))
+    with (output_dir / "timing_stats.json").open("w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2)
+
+    if timings:
+        epochs = list(range(1, len(timings) + 1))
+        fig, ax = plt.subplots(figsize=(7, 4))
+        ax.bar(epochs, timings, color="tab:green")
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("Duration (s)")
+        ax.set_title("Epoch Timing Breakdown")
+        plt.tight_layout()
+        fig.savefig(output_dir / "timing_stats.png", dpi=200)
+        plt.close(fig)
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description="Train a digit classifier and optionally export diagnostics.")
+    parser.add_argument("--output-dir", type=Path, default=Path("artifacts"), help="Where to store generated assets.")
+    parser.add_argument("--epochs", type=int, default=150, help="Number of training epochs (default: 150).")
+    parser.add_argument("--learning-rate", type=float, default=0.1, help="Initial learning rate for gradient descent.")
     parser.add_argument(
-        "--config",
-        type=Path,
-        default=None,
-        help="Optional JSON file containing argument overrides.",
+        "--lr-decay", type=float, default=0.01, help="Linear decay factor applied per epoch to the learning rate."
+    )
+    parser.add_argument("--test-split", type=float, default=0.2, help="Fraction of the dataset reserved for evaluation.")
+    parser.add_argument("--seed", type=int, default=13, help="Random seed controlling the train/test split.")
+    parser.add_argument(
+        "--roc-per-class",
+        action="store_true",
+        help="Compute ROC curves and AUC scores for each class (requires probability estimates).",
     )
     parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=None,
-        help="Directory where artifacts will be written (overrides config/default).",
-    )
-    parser.add_argument("--epochs", type=int, default=None, help="Number of training epochs.")
-    parser.add_argument(
-        "--batch-size", type=int, default=None, help="Mini-batch size for gradient descent."
+        "--learning-rate-trace",
+        action="store_true",
+        help="Persist the learning-rate schedule and loss values as JSON/PNG artifacts.",
     )
     parser.add_argument(
-        "--learning-rate", type=float, default=None, help="Gradient descent learning rate."
-    )
-    parser.add_argument(
-        "--seed", type=int, default=None, help="Random seed for reproducibility."
-    )
-    parser.add_argument(
-        "--run-name",
-        type=str,
-        default=None,
-        help="Optional identifier for the run; autogenerated when omitted.",
+        "--timing-stats",
+        action="store_true",
+        help="Record timing statistics for each epoch and export summary visualizations.",
     )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    config = build_training_config(args)
-    config.output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = ensure_output_dir(args.output_dir)
 
-    random.seed(config.seed)
-    np.random.seed(config.seed)
+    x_train, x_test, y_train, y_test, class_names = load_dataset(args.test_split, args.seed)
 
-    digits = load_digits()
-    features = digits.data.astype(np.float64)
-    labels = digits.target.astype(np.int64)
-    indices = np.arange(labels.size)
+    training = train_model(x_train, y_train, args.epochs, args.learning_rate, args.lr_decay)
 
-    x_train, x_temp, y_train, y_temp, idx_train, idx_temp = train_test_split(
-        features,
-        labels,
-        indices,
-        test_size=0.2,
-        random_state=config.seed,
-        stratify=labels,
-    )
+    train_predictions = training.predict(x_train)
+    test_probabilities = training.predict_proba(x_test)
+    test_predictions = test_probabilities.argmax(axis=1)
 
-    x_val, x_test, y_val, y_test, idx_val, idx_test = train_test_split(
-        x_temp,
-        y_temp,
-        idx_temp,
-        test_size=0.5,
-        random_state=config.seed,
-        stratify=y_temp,
-    )
+    train_accuracy = accuracy_score(y_train, train_predictions)
+    test_accuracy = accuracy_score(y_test, test_predictions)
 
-    x_train, feature_mean, feature_std = prepare_features(
-        x_train, return_stats=True
-    )
-    x_val = prepare_features(x_val, mean=feature_mean, std=feature_std)
-    x_test = prepare_features(x_test, mean=feature_mean, std=feature_std)
+    save_metrics(output_dir, class_names, y_test, test_predictions, train_accuracy, test_accuracy)
+    save_confusion_matrix(output_dir, class_names, y_test, test_predictions)
 
-    weights, biases, history = train_model(config, x_train, y_train, x_val, y_val)
+    maybe_save_roc_curves(args.roc_per_class, output_dir, class_names, y_test, test_probabilities)
+    maybe_save_learning_rate_trace(args.learning_rate_trace, output_dir, training.learning_rates, training.losses)
+    maybe_save_timing_stats(args.timing_stats, output_dir, training.epoch_timings, training.total_time)
 
-    test_logits = x_test @ weights + biases
-    test_probs = softmax(test_logits)
-
-    dataset_info = DatasetInfo(
-        name="sklearn_digits",
-        num_classes=int(labels.max() + 1),
-        num_features=features.shape[1],
-        image_shape=digits.images.shape[1:3],
-        train_size=int(y_train.size),
-        val_size=int(y_val.size),
-        test_size=int(y_test.size),
-    )
-
-    artifacts = build_artifacts(
-        config,
-        dataset_info,
-        history,
-        test_probs,
-        y_test,
-        idx_test,
-        feature_mean,
-        feature_std,
-    )
-
-    write_artifacts(config.output_dir, artifacts)
-
-    # Save gallery using the first N test samples.
-    render_gallery(
-        config.output_dir / "gallery.png",
-        digits.images,
-        idx_test,
-        test_probs.argmax(axis=1),
-        y_test,
-    )
-
-    print(f"Artifacts written to {config.output_dir.resolve()}")
+    summary = {
+        "train_accuracy": train_accuracy,
+        "test_accuracy": test_accuracy,
+        "artifacts": sorted(str(path.name) for path in output_dir.iterdir() if path.is_file()),
+    }
+    print(json.dumps(summary, indent=2))
 
 
 if __name__ == "__main__":
