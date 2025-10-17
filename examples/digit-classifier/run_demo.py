@@ -22,12 +22,43 @@ import random
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, List, Tuple
+from typing import Dict, Iterable, List, Mapping, Tuple
 
 import numpy as np
 from PIL import Image
 from sklearn.datasets import load_digits
 from sklearn.model_selection import train_test_split
+
+if __package__:
+    from .artifact_schemas import (
+        validate_loss_curves_payload,
+        validate_metadata_payload,
+        validate_metrics_payload,
+        validate_predictions_payload,
+    )
+else:  # pragma: no cover - compatibility when executing as a script
+    from artifact_schemas import (
+        validate_loss_curves_payload,
+        validate_metadata_payload,
+        validate_metrics_payload,
+        validate_predictions_payload,
+    )
+
+
+DEFAULT_ARGUMENTS = {
+    "epochs": 40,
+    "batch_size": 128,
+    "learning_rate": 0.5,
+    "seed": 13,
+    "output_dir": "artifacts/latest",
+}
+
+ARTIFACT_FILES = {
+    "metrics": "metrics.json",
+    "predictions": "predictions.json",
+    "loss_curves": "loss_curves.json",
+    "metadata": "run_metadata.json",
+}
 
 
 @dataclass
@@ -59,6 +90,53 @@ class TrainingMetrics:
     train_accuracy: float
     val_loss: float
     val_accuracy: float
+
+
+def load_config_overrides(path: Path) -> Dict[str, object]:
+    """Load configuration overrides from a JSON file."""
+
+    with path.open("r", encoding="utf-8") as fh:
+        data = json.load(fh)
+
+    if not isinstance(data, Mapping):
+        raise ValueError("Configuration file must contain a JSON object.")
+
+    allowed_keys = set(DEFAULT_ARGUMENTS) | {"run_name"}
+    overrides: Dict[str, object] = {}
+    for key in allowed_keys:
+        if key in data:
+            overrides[key] = data[key]
+    return overrides
+
+
+def build_training_config(args: argparse.Namespace) -> TrainingConfig:
+    """Combine CLI arguments with config-file overrides."""
+
+    resolved: Dict[str, object] = dict(DEFAULT_ARGUMENTS)
+    if args.config:
+        resolved.update(load_config_overrides(Path(args.config)))
+
+    for key in ("epochs", "batch_size", "learning_rate", "seed", "run_name"):
+        value = getattr(args, key, None)
+        if value is not None:
+            resolved[key] = value
+
+    output_dir = getattr(args, "output_dir", None)
+    if output_dir is not None:
+        resolved["output_dir"] = output_dir
+
+    output_dir_path = Path(str(resolved["output_dir"]))
+    run_name = resolved.get("run_name")
+    seed = int(resolved.get("seed", DEFAULT_ARGUMENTS["seed"]))
+
+    return TrainingConfig(
+        seed=seed,
+        epochs=int(resolved.get("epochs", DEFAULT_ARGUMENTS["epochs"])),
+        batch_size=int(resolved.get("batch_size", DEFAULT_ARGUMENTS["batch_size"])),
+        learning_rate=float(resolved.get("learning_rate", DEFAULT_ARGUMENTS["learning_rate"])),
+        output_dir=output_dir_path,
+        run_name=str(run_name) if run_name else build_run_name(seed),
+    )
 
 
 def softmax(logits: np.ndarray) -> np.ndarray:
@@ -187,16 +265,15 @@ def render_gallery(
     canvas.save(output_path)
 
 
-def export_metrics(
+def build_artifacts(
     config: TrainingConfig,
     dataset: DatasetInfo,
     history: List[TrainingMetrics],
     test_probs: np.ndarray,
     test_labels: np.ndarray,
     test_indices: np.ndarray,
-    output_dir: Path,
-) -> None:
-    """Write the JSON artifacts for downstream tooling."""
+) -> Dict[str, Mapping[str, object]]:
+    """Create JSON-serialisable payloads for the dashboard."""
 
     if not history:
         raise ValueError("Training history is empty; increase --epochs above zero.")
@@ -249,24 +326,39 @@ def export_metrics(
             "seed": config.seed,
         },
         "artifacts": {
-            "metrics": "metrics.json",
-            "predictions": "predictions.json",
-            "loss_curves": "loss_curves.json",
+            "metrics": ARTIFACT_FILES["metrics"],
+            "predictions": ARTIFACT_FILES["predictions"],
+            "loss_curves": ARTIFACT_FILES["loss_curves"],
             "gallery": "gallery.png",
         },
     }
 
-    with (output_dir / "metrics.json").open("w", encoding="utf-8") as fp:
-        json.dump(metrics, fp, indent=2)
+    return {
+        "metrics": metrics,
+        "predictions": predictions_payload,
+        "loss_curves": loss_curves_payload,
+        "metadata": metadata_payload,
+    }
 
-    with (output_dir / "predictions.json").open("w", encoding="utf-8") as fp:
-        json.dump(predictions_payload, fp, indent=2)
 
-    with (output_dir / "loss_curves.json").open("w", encoding="utf-8") as fp:
-        json.dump(loss_curves_payload, fp, indent=2)
+def write_artifacts(output_dir: Path, artifacts: Mapping[str, Mapping[str, object]]) -> None:
+    """Validate and serialize the JSON artifacts."""
 
-    with (output_dir / "run_metadata.json").open("w", encoding="utf-8") as fp:
-        json.dump(metadata_payload, fp, indent=2)
+    validators = {
+        "metrics": validate_metrics_payload,
+        "predictions": validate_predictions_payload,
+        "loss_curves": validate_loss_curves_payload,
+        "metadata": validate_metadata_payload,
+    }
+
+    for key, payload in artifacts.items():
+        validator = validators.get(key)
+        if validator is None:
+            raise KeyError(f"Unknown artifact '{key}'")
+        validator(payload)
+        filename = ARTIFACT_FILES[key]
+        with (output_dir / filename).open("w", encoding="utf-8") as fp:
+            json.dump(payload, fp, indent=2)
 
 
 def prepare_features(features: np.ndarray) -> np.ndarray:
@@ -285,20 +377,26 @@ def build_run_name(seed: int) -> str:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Optional JSON file containing argument overrides.",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("artifacts"),
-        help="Directory where artifacts will be written.",
+        default=None,
+        help="Directory where artifacts will be written (overrides config/default).",
     )
-    parser.add_argument("--epochs", type=int, default=40, help="Number of training epochs.")
+    parser.add_argument("--epochs", type=int, default=None, help="Number of training epochs.")
     parser.add_argument(
-        "--batch-size", type=int, default=128, help="Mini-batch size for gradient descent."
-    )
-    parser.add_argument(
-        "--learning-rate", type=float, default=0.5, help="Gradient descent learning rate."
+        "--batch-size", type=int, default=None, help="Mini-batch size for gradient descent."
     )
     parser.add_argument(
-        "--seed", type=int, default=13, help="Random seed for reproducibility."
+        "--learning-rate", type=float, default=None, help="Gradient descent learning rate."
+    )
+    parser.add_argument(
+        "--seed", type=int, default=None, help="Random seed for reproducibility."
     )
     parser.add_argument(
         "--run-name",
@@ -311,17 +409,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    output_dir = args.output_dir
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    config = TrainingConfig(
-        seed=args.seed,
-        epochs=args.epochs,
-        batch_size=args.batch_size,
-        learning_rate=args.learning_rate,
-        output_dir=output_dir,
-        run_name=args.run_name or build_run_name(args.seed),
-    )
+    config = build_training_config(args)
+    config.output_dir.mkdir(parents=True, exist_ok=True)
 
     random.seed(config.seed)
     np.random.seed(config.seed)
@@ -364,18 +453,20 @@ def main() -> None:
         test_size=int(y_test.size),
     )
 
-    export_metrics(config, dataset_info, history, test_probs, y_test, idx_test, output_dir)
+    artifacts = build_artifacts(config, dataset_info, history, test_probs, y_test, idx_test)
+
+    write_artifacts(config.output_dir, artifacts)
 
     # Save gallery using the first N test samples.
     render_gallery(
-        output_dir / "gallery.png",
+        config.output_dir / "gallery.png",
         digits.images,
         idx_test,
         test_probs.argmax(axis=1),
         y_test,
     )
 
-    print(f"Artifacts written to {output_dir.resolve()}")
+    print(f"Artifacts written to {config.output_dir.resolve()}")
 
 
 if __name__ == "__main__":

@@ -53,7 +53,16 @@ function renderMetricsTable(metrics) {
   if (!tableBody) return;
 
   tableBody.innerHTML = '';
-  const entries = Object.entries(metrics);
+  const entries = Object.entries(metrics || {});
+  if (!entries.length) {
+    const row = document.createElement('tr');
+    const cell = document.createElement('td');
+    cell.colSpan = 2;
+    cell.textContent = 'Metric summary unavailable.';
+    row.appendChild(cell);
+    tableBody.appendChild(row);
+    return;
+  }
   entries.sort(([aKey], [bKey]) => aKey.localeCompare(bKey));
 
   for (const [key, value] of entries) {
@@ -74,7 +83,16 @@ function renderLossCurves(curves) {
   if (!tableBody) return;
 
   tableBody.innerHTML = '';
-  const epochs = curves.epochs || [];
+  const epochs = Array.isArray(curves?.epochs) ? curves.epochs : [];
+  if (!epochs.length) {
+    const row = document.createElement('tr');
+    const cell = document.createElement('td');
+    cell.colSpan = 5;
+    cell.textContent = 'Loss curve data unavailable.';
+    row.appendChild(cell);
+    tableBody.appendChild(row);
+    return;
+  }
   for (let i = 0; i < epochs.length; i += 1) {
     const row = document.createElement('tr');
 
@@ -132,6 +150,16 @@ function renderPredictions(predictions) {
   tableBody.innerHTML = '';
   const samples = Array.isArray(predictions?.samples) ? predictions.samples : [];
   const limit = Math.max(1, ARTIFACT_CONFIG.maxPredictionRows || 25);
+  if (!samples.length) {
+    const row = document.createElement('tr');
+    const cell = document.createElement('td');
+    cell.colSpan = 6;
+    cell.textContent = 'No prediction samples were found in predictions.json.';
+    row.appendChild(cell);
+    tableBody.appendChild(row);
+    return;
+  }
+
   samples.slice(0, limit).forEach((sample) => {
     const row = document.createElement('tr');
     const indexCell = document.createElement('th');
@@ -177,6 +205,17 @@ function renderPredictions(predictions) {
 
     tableBody.appendChild(row);
   });
+
+  if (samples.length > limit) {
+    const remainder = samples.length - limit;
+    const summaryRow = document.createElement('tr');
+    const summaryCell = document.createElement('td');
+    summaryCell.colSpan = 6;
+    summaryCell.classList.add('table-note');
+    summaryCell.textContent = `${remainder} additional sample${remainder === 1 ? '' : 's'} not shown. Adjust data-prediction-rows to see more.`;
+    summaryRow.appendChild(summaryCell);
+    tableBody.appendChild(summaryRow);
+  }
 }
 
 async function loadArtifacts() {

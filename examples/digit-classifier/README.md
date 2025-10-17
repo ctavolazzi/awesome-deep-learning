@@ -32,6 +32,16 @@ Key options:
   schedule for the softmax regression model.
 - `--seed` – ensures reproducible dataset shuffling and initial weights.
 - `--run-name` – optional, otherwise a timestamped identifier is used.
+- `--config` – load overrides from a JSON file (see below) so that teams can
+  share a reproducible training recipe.
+
+The repository ships with `config.example.json` that mirrors the CLI
+arguments.  Provide your own configuration file if you want to pin a
+specific output directory or learning schedule:
+
+```bash
+python examples/digit-classifier/run_demo.py --config examples/digit-classifier/config.example.json
+```
 
 The command writes five artifacts into the requested directory:
 
@@ -44,7 +54,19 @@ The command writes five artifacts into the requested directory:
 | `gallery.png` | A 5×5 grid of test examples coloured by correctness for a quick qualitative check.
 
 All JSON files are indented and human-readable, making it easy to diff
-runs or inspect them manually.
+runs or inspect them manually.  They are also validated against a small
+set of schema helpers (`artifact_schemas.py`) before being written so
+that front-end code can rely on stable shapes.
+
+### Configuration and validation
+
+- `artifact_schemas.py` centralises the schema checks for
+  `metrics.json`, `predictions.json`, `loss_curves.json`, and
+  `run_metadata.json`.  If you change an artifact, update both the
+  schema helper and the dashboard loader.
+- `config.example.json` shows how to define a repeatable training run.
+  When a config file is supplied the CLI still takes precedence for any
+  flags you pass explicitly.
 
 ### JSON schema overview
 
@@ -149,3 +171,18 @@ restart the server if you place the artifacts elsewhere) to see the new
 results.  The dashboard disables HTTP caching when requesting the JSON
 files, so a simple browser refresh is enough to pick up the latest
 metrics.
+
+## Testing the pipeline
+
+The repository contains a lightweight regression test that exercises the
+demo end-to-end and validates the emitted artifacts.  The test is marked
+as skipped automatically when scikit-learn is unavailable (for example
+in minimal CI containers).
+
+```bash
+python -m unittest tests.test_digit_classifier_artifacts
+```
+
+Running the demo manually remains the fastest way to sanity check the
+dashboard, but the automated test protects the schema contract from
+accidental regressions during development.
