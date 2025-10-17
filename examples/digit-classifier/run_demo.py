@@ -21,22 +21,20 @@ from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple
 if TYPE_CHECKING:  # pragma: no cover - import only for type checking
     from matplotlib import pyplot as plt
 
-import numpy as np
-import yaml
-from sklearn.datasets import load_digits
-from sklearn.metrics import (
-    ConfusionMatrixDisplay,
-    accuracy_score,
-    classification_report,
-    confusion_matrix,
-    roc_auc_score,
-    roc_curve,
-)
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
 
 
 _PYPLOT: Optional["plt"] = None
+_RUNTIME_LOADED = False
+np: Any
+load_digits: Any
+ConfusionMatrixDisplay: Any
+accuracy_score: Any
+classification_report: Any
+confusion_matrix: Any
+roc_auc_score: Any
+roc_curve: Any
+train_test_split: Any
+StandardScaler: Any
 
 
 def get_pyplot():
@@ -50,6 +48,49 @@ def get_pyplot():
 
         _PYPLOT = _plt
     return _PYPLOT
+
+
+def import_runtime_dependencies() -> None:
+    global _RUNTIME_LOADED
+    if _RUNTIME_LOADED:
+        return
+
+    global np
+    global load_digits
+    global ConfusionMatrixDisplay
+    global accuracy_score
+    global classification_report
+    global confusion_matrix
+    global roc_auc_score
+    global roc_curve
+    global train_test_split
+    global StandardScaler
+
+    import numpy as _np
+    from sklearn.datasets import load_digits as _load_digits
+    from sklearn.metrics import (
+        ConfusionMatrixDisplay as _ConfusionMatrixDisplay,
+        accuracy_score as _accuracy_score,
+        classification_report as _classification_report,
+        confusion_matrix as _confusion_matrix,
+        roc_auc_score as _roc_auc_score,
+        roc_curve as _roc_curve,
+    )
+    from sklearn.model_selection import train_test_split as _train_test_split
+    from sklearn.preprocessing import StandardScaler as _StandardScaler
+
+    np = _np
+    load_digits = _load_digits
+    ConfusionMatrixDisplay = _ConfusionMatrixDisplay
+    accuracy_score = _accuracy_score
+    classification_report = _classification_report
+    confusion_matrix = _confusion_matrix
+    roc_auc_score = _roc_auc_score
+    roc_curve = _roc_curve
+    train_test_split = _train_test_split
+    StandardScaler = _StandardScaler
+
+    _RUNTIME_LOADED = True
 
 
 @dataclass
@@ -337,6 +378,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_config(path: Path | None) -> tuple[Path, Dict[str, Any]]:
+    import yaml
+
     if path is None:
         path = Path(__file__).with_name("config.yaml")
     try:
@@ -376,6 +419,7 @@ def resolve_settings(args: argparse.Namespace, config: Dict[str, Any], config_pa
 def main() -> None:
     args = parse_args()
     config_path, config = load_config(args.config)
+    import_runtime_dependencies()
     settings = resolve_settings(args, config, config_path)
 
     output_dir = ensure_output_dir(settings["output_dir"])
