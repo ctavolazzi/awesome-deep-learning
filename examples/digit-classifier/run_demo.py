@@ -361,12 +361,26 @@ def write_artifacts(output_dir: Path, artifacts: Mapping[str, Mapping[str, objec
             json.dump(payload, fp, indent=2)
 
 
-def prepare_features(features: np.ndarray) -> np.ndarray:
-    """Normalise features and add a small bias term for stability."""
+def prepare_features(
+    features: np.ndarray,
+    *,
+    mean: np.ndarray | None = None,
+    std: np.ndarray | None = None,
+    return_stats: bool = False,
+) -> np.ndarray | Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Normalise features using train-set statistics."""
 
-    mean = features.mean(axis=0)
-    std = features.std(axis=0) + 1e-6
-    return (features - mean) / std
+    computed_mean = mean if mean is not None else features.mean(axis=0)
+    if std is None:
+        computed_std = features.std(axis=0)
+        adjusted_std = computed_std + 1e-6
+    else:
+        adjusted_std = std
+    normalised = (features - computed_mean) / adjusted_std
+
+    if return_stats:
+        return normalised, computed_mean, adjusted_std
+    return normalised
 
 
 def build_run_name(seed: int) -> str:
@@ -416,7 +430,7 @@ def main() -> None:
     np.random.seed(config.seed)
 
     digits = load_digits()
-    features = prepare_features(digits.data.astype(np.float64))
+    features = digits.data.astype(np.float64)
     labels = digits.target.astype(np.int64)
     indices = np.arange(labels.size)
 
@@ -437,6 +451,12 @@ def main() -> None:
         random_state=config.seed,
         stratify=y_temp,
     )
+
+    x_train, feature_mean, feature_std = prepare_features(
+        x_train, return_stats=True
+    )
+    x_val = prepare_features(x_val, mean=feature_mean, std=feature_std)
+    x_test = prepare_features(x_test, mean=feature_mean, std=feature_std)
 
     weights, biases, history = train_model(config, x_train, y_train, x_val, y_val)
 
