@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 from pathlib import Path
 from typing import Dict, Iterable, List
 
@@ -26,6 +27,14 @@ from sklearn.datasets import load_digits
 from sklearn.metrics import ConfusionMatrixDisplay, classification_report, confusion_matrix, roc_auc_score, roc_curve
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
+
+# Ensure local imports resolve even when the script is executed from outside the
+# example directory (e.g., via ``python -m`` with a different working
+# directory).  ``Path.resolve`` returns an absolute path, so duplication checks
+# remain stable across relative invocations.
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
 from pipeline import (
     DatasetLoader,
