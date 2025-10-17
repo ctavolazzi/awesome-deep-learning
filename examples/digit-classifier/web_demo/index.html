@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Digit Classifier Visual Playground</title>
+    <link rel="stylesheet" href="style.css" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body data-artifact-path="./artifacts/latest">
+    <header class="top-bar" aria-label="Primary navigation">
+      <div class="top-bar__brand">
+        <span class="brand-mark" aria-hidden="true">◎</span>
+        <span class="brand-text">Awesome Deep Learning</span>
+      </div>
+      <nav class="top-bar__nav" aria-label="Dashboard sections">
+        <a href="#dataset" class="nav-link">Dataset</a>
+        <a href="#insights" class="nav-link">Insights</a>
+        <a href="#experiments" class="nav-link">Experiments</a>
+        <a href="#playbook" class="nav-link">Playbook</a>
+      </nav>
+      <div class="top-bar__actions">
+        <a class="btn ghost" href="../README.md" target="_blank" rel="noopener">Docs</a>
+        <button id="toggle-theme" class="btn ghost" type="button" aria-pressed="false">
+          <span class="btn__icon" aria-hidden="true">🌗</span>
+          <span class="btn__label">Dark</span>
+        </button>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero" aria-labelledby="hero-heading">
+        <div class="hero__content">
+          <p class="eyebrow">Digit Classifier</p>
+          <h1 id="hero-heading">Visualize, audit, and extend the demo model</h1>
+          <p class="lead">
+            This interactive dashboard distills the <strong>examples/digit-classifier</strong> pipeline into
+            practical building blocks. Inspect curated digits, review training performance, and map next steps
+            before you touch the Python runtime.
+          </p>
+          <div class="hero__quick-stats" role="list">
+            <article class="quick-stat" role="listitem">
+              <span class="quick-stat__label">Dataset</span>
+              <span class="quick-stat__value">scikit-learn digits (8×8)</span>
+            </article>
+            <article class="quick-stat" role="listitem">
+              <span class="quick-stat__label">Model</span>
+              <span class="quick-stat__value" id="hero-model">—</span>
+            </article>
+            <article class="quick-stat" role="listitem">
+              <span class="quick-stat__label">Last run</span>
+              <span class="quick-stat__value" id="hero-run-date">—</span>
+            </article>
+          </div>
+          <div class="hero__actions">
+            <label class="control control--inline">
+              <span>Artifact bundle</span>
+              <select id="run-selector" aria-label="Select artifact bundle">
+                <option>Loading…</option>
+              </select>
+            </label>
+            <p class="hero__actions-hint">Artifacts refresh automatically after each Python run.</p>
+          </div>
+        </div>
+        <div class="hero__viz" aria-hidden="true">
+          <canvas id="hero-digit" width="160" height="160"></canvas>
+          <div class="hero__viz-shadow"></div>
+        </div>
+      </section>
+
+      <section id="dataset" class="section section--split" aria-labelledby="dataset-heading">
+        <div class="section__intro">
+          <h2 id="dataset-heading">Dataset studio</h2>
+          <p>
+            Browse representative digits, surface misclassifications, and capture pixel-level details for reporting
+            or debugging.
+          </p>
+          <div class="section__controls">
+            <label class="control">
+              <span>Label</span>
+              <select id="digit-filter" aria-label="Filter digit samples by label">
+                <option value="all">All digits</option>
+              </select>
+            </label>
+            <label class="control control--toggle">
+              <input id="misclassified-toggle" type="checkbox" />
+              <span>Only misclassified</span>
+            </label>
+            <button id="random-button" class="btn" type="button">Shuffle samples</button>
+          </div>
+          <p class="section__hint">
+            Tip: click any card to open the inspector and export the pixel grid as an image for slide decks or bug
+            reports.
+          </p>
+        </div>
+        <div class="section__body">
+          <div class="dataset">
+            <div id="digit-grid" class="digit-grid" role="list" aria-label="Digit samples"></div>
+          </div>
+          <aside class="inspector" aria-live="polite">
+            <header class="inspector__header">
+              <h3 id="inspector-title">Select a sample</h3>
+              <button id="download-button" class="btn ghost" type="button" disabled>Export PNG</button>
+            </header>
+            <div class="inspector__canvas">
+              <canvas id="inspector-canvas" width="240" height="240" role="img" aria-label="Digit preview"></canvas>
+            </div>
+            <dl class="inspector__meta">
+              <div>
+                <dt>Ground truth</dt>
+                <dd id="inspector-label">—</dd>
+              </div>
+              <div>
+                <dt>Prediction</dt>
+                <dd id="inspector-prediction">—</dd>
+              </div>
+              <div>
+                <dt>Confidence</dt>
+                <dd id="inspector-confidence">—</dd>
+              </div>
+            </dl>
+            <p id="inspector-description" class="inspector__description">
+              Choose a digit to inspect per-pixel activations and contextual notes captured during evaluation.
+            </p>
+          </aside>
+        </div>
+      </section>
+
+      <section id="insights" class="section" aria-labelledby="insights-heading">
+        <div class="section__header">
+          <div>
+            <h2 id="insights-heading">Model insights</h2>
+            <p>Quantitative signals, diagnostics, and the learning curve from the reference run.</p>
+          </div>
+          <div class="section__header-actions">
+            <button id="loss-refresh" class="btn ghost" type="button">Replay loss curve</button>
+          </div>
+        </div>
+        <div class="insights__grid">
+          <div class="metrics" role="list">
+            <article class="metric-card" role="listitem">
+              <span class="metric-card__label">Model</span>
+              <span class="metric-card__value" id="model-name">—</span>
+              <span class="metric-card__hint" id="model-params">—</span>
+            </article>
+            <article class="metric-card" role="listitem">
+              <span class="metric-card__label">Accuracy</span>
+              <span class="metric-card__value" id="metric-accuracy">—</span>
+              <span class="metric-card__hint">Hold-out set</span>
+            </article>
+            <article class="metric-card" role="listitem">
+              <span class="metric-card__label">Macro F1</span>
+              <span class="metric-card__value" id="metric-f1">—</span>
+              <span class="metric-card__hint">Class-balanced</span>
+            </article>
+            <article class="metric-card" role="listitem">
+              <span class="metric-card__label">Training time</span>
+              <span class="metric-card__value" id="metric-train-time">—</span>
+              <span class="metric-card__hint">Intel i7 reference laptop</span>
+            </article>
+          </div>
+          <div class="chart" aria-hidden="true">
+            <canvas id="loss-chart" width="640" height="320"></canvas>
+          </div>
+          <div class="matrix-card" aria-labelledby="matrix-heading">
+            <div class="matrix-card__header">
+              <h3 id="matrix-heading">Confusion matrix</h3>
+              <p>Hover a cell to spotlight supporting samples.</p>
+            </div>
+            <div id="confusion-matrix" class="matrix" role="grid" aria-label="Confusion matrix"></div>
+          </div>
+          <div class="callout">
+            <h3>Key observations</h3>
+            <ul id="insight-observations"></ul>
+          </div>
+        </div>
+      </section>
+
+      <section id="experiments" class="section" aria-labelledby="experiments-heading">
+        <div class="section__header">
+          <div>
+            <h2 id="experiments-heading">Experiment playset</h2>
+            <p>Review the configuration and compare alternative runs without leaving the browser.</p>
+          </div>
+          <div class="section__header-actions">
+            <button id="compare-button" class="btn" type="button">Compare experiments</button>
+          </div>
+        </div>
+        <div class="experiments">
+          <div class="config-card">
+            <h3>Training recipe</h3>
+            <dl id="config-list"></dl>
+          </div>
+          <div class="run-table-wrapper">
+            <table class="run-table">
+              <caption class="visually-hidden">Saved experiment runs</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Run</th>
+                  <th scope="col">Hidden layers</th>
+                  <th scope="col">Activation</th>
+                  <th scope="col">Accuracy</th>
+                  <th scope="col">Macro F1</th>
+                  <th scope="col">Notes</th>
+                </tr>
+              </thead>
+              <tbody id="run-table-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="playbook" class="section" aria-labelledby="playbook-heading">
+        <div class="section__header">
+          <div>
+            <h2 id="playbook-heading">Workflow playbook</h2>
+            <p>Follow the trace from raw data to insight and identify integration points.</p>
+          </div>
+        </div>
+        <ol class="timeline" id="timeline"></ol>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <p>
+        Built for the Awesome Deep Learning hands-on demo. <a href="https://github.com/" target="_blank" rel="noopener">View source</a>
+      </p>
+    </footer>
+
+    <script src="script.js"></script>
+  </body>
+</html>

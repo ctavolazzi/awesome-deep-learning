@@ -22,11 +22,47 @@
 
 * **[Frameworks](#frameworks)**  
 
-* **[Tools](#tools)**  
+* **[Tools](#tools)**
 
-* **[Miscellaneous](#miscellaneous)**  
+* **[Miscellaneous](#miscellaneous)**
 
-* **[Contributing](#contributing)**  
+* **[Contributing](#contributing)**
+
+* **[Hands-on Demo](#hands-on-demo)**
+
+### Hands-on Demo
+
+Curious to see a compact neural network in action? Run the
+[`examples/digit-classifier`](examples/digit-classifier) project to train an
+MLP on scikit-learn's digits dataset, print evaluation metrics, and generate a
+gallery of predictions. A step-by-step walkthrough lives in
+[`examples/digit-classifier/README.md`](examples/digit-classifier/README.md),
+and an interactive browser front-end is available under
+[`examples/digit-classifier/web_demo`](examples/digit-classifier/web_demo) for
+visual exploration. The dashboard ships with:
+
+- a **dataset studio** with filtering, shuffling, and a pixel-perfect inspector;
+- a **model insights** wall featuring animated loss curves and a confusion
+  matrix explorer; and
+- an **experiment playset** that summarizes saved runs and highlights actionable
+  workflow steps.
+
+Run `examples/digit-classifier/run_demo.py` and the dashboard will automatically
+ingest the generated artifact bundle—`metrics.json`, `run_summary.json`,
+`predictions.json`, `loss_curve.json`, `sample_gallery.png`, and
+`confusion_matrix.png`—so the browser view stays in sync with your latest
+experiment. Each run lands in `web_demo/artifacts/<timestamp>-<label>/`, the
+`latest/` folder is refreshed for quick sharing, and `index.json` tracks the
+history so you can jump between runs via the dashboard selector. Previewing the
+UI in an offline environment? Run
+`examples/digit-classifier/web_demo/seed_sample_artifacts.py` to generate
+synthetic runs that mimic real training output—the dashboard will pick them up
+immediately. Serve the static `web_demo/` folder or open `index.html` directly,
+optionally overriding the artifact path with `?artifacts=../your-output-dir`.
+For a broader roadmap and MVP scope, see
+[`docs/mvp_plan.md`](docs/mvp_plan.md). Ready to ship a change? Follow the
+[release checklist](docs/release_checklist.md) to regenerate artifacts, rerun
+tests, and capture a fresh dashboard preview before opening your PR.
 
 
 ### Books
