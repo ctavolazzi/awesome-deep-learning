@@ -44,3 +44,17 @@ All artifacts are written to the directory specified by `--output-dir` (which
 defaults to `./artifacts`).  This keeps the new analytics assets colocated with
 existing outputs, allowing dashboards or notebooks that already watch the
 artifact directory to surface the richer context automatically.
+
+## Artifact validation
+
+Each JSON artifact is validated before it is written to disk.  The helper
+functions in `run_demo.py` check for required fields, numeric ranges, and shape
+consistency so that downstream tooling can rely on a stable schema.  The
+integration test in `tests/test_digit_classifier_artifacts.py` loads the module
+directly and exercises the validators against the generated files.
+
+When adding a new export, define a corresponding `validate_*` helper near the
+top of `run_demo.py` and invoke it just before writing the JSON payload.  This
+keeps the guarantees close to the data producer and makes the validation logic
+reusable in other scripts or tests.  For more complex scenarios you can follow
+the same pattern but replace the custom checks with a Pydantic model.
