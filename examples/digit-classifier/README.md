@@ -130,20 +130,38 @@ artifacts that can be generated alongside the trained model metrics.
 
 ## Usage
 
+### Quick start
+
 ```bash
-python examples/digit-classifier/run_demo.py \
-  --output-dir artifacts/digits \
-  --epochs 120 \
-  --learning-rate 0.12
+python examples/digit-classifier/run_demo.py
 ```
 
-Running without any optional flags keeps the workflow fast and produces:
+The script resolves its defaults from `config.yaml` (see [Configuration](#configuration)) and reports a
+JSON-formatted summary to stdout containing the final train/test accuracy together with the list of
+generated artifact filenames.
+
+Running without additional flags keeps the workflow fast and produces:
 
 * `metrics.json` – aggregate accuracy numbers plus a classification report.
 * `confusion_matrix.png` – confusion matrix visualization for the hold-out split.
 
-The script prints a JSON-formatted summary to stdout containing the final train
-and test accuracy together with the list of generated artifact filenames.
+### Command-line reference
+
+All runtime knobs can be tweaked from the CLI and override the YAML configuration on a
+field-by-field basis.  The most commonly used options are summarized below:
+
+| Flag | Purpose |
+| --- | --- |
+| `--config PATH` | Load settings from a YAML file (defaults to `config.yaml` next to the script). |
+| `--output-dir DIR` | Store generated metrics and plots under `DIR`. |
+| `--epochs INT` | Number of training epochs to perform. |
+| `--learning-rate FLOAT` | Initial learning rate used by gradient descent. |
+| `--lr-decay FLOAT` | Linear learning-rate decay applied at each epoch. |
+| `--test-split FLOAT` | Fraction of the dataset reserved for evaluation. |
+| `--seed INT` | Random seed controlling the train/test split. |
+| `--[no-]roc-per-class` | Toggle per-class ROC generation regardless of the config file. |
+| `--[no-]learning-rate-trace` | Toggle persistence of the learning-rate schedule. |
+| `--[no-]timing-stats` | Toggle export of epoch-level timing diagnostics. |
 
 ## Expanded analytics
 
